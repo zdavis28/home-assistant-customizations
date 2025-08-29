@@ -68,13 +68,21 @@ trigger:
     subtype: 'on'
     id: "on"
 
-  # Raise (Up/Brighten)
+  # Raise (Up/Brighten) - Press
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: raise
     id: "up"
+
+  # Raise (Up/Brighten) - Release
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: release
+    subtype: raise
+    id: "up_release"
 
   # Middle (Stop / Favorite)
   - platform: device
@@ -84,13 +92,21 @@ trigger:
     subtype: stop
     id: "middle"
 
-  # Lower (Down/Dim)
+  # Lower (Down/Dim) - Press
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: lower
     id: "down"
+
+  # Lower (Down/Dim) - Release  
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: release
+    subtype: lower
+    id: "down_release"
 
   # Bottom (Off)
   - platform: device
@@ -122,65 +138,56 @@ action:
                 target:
                   entity_id: !input light_entity
 
-      # ---------- RAISE: short = +brightness, long = brighten continuously ----------
+      # ---------- RAISE: start long press sequence ----------
       - conditions: [{ condition: trigger, id: 'up' }]
         sequence:
-          - wait_for_trigger:
-              - platform: device
-                device_id: !input pico_remote
-                domain: lutron_caseta
-                type: release
-                subtype: raise
-            timeout: "00:00:00.3"
-            continue_on_timeout: true
+          # First, do a single step increase
+          - variables:
+              current: "{{ state_attr(light, 'brightness') | int(0) }}"
+              current_pct: "{{ (current / 255 * 100) | int }}"
+              target: >
+                {% set val = current_pct + (step | int) %}
+                {% if states(light) == 'off' %}
+                  {{ step | int }}
+                {% elif val > 100 %}
+                  100
+                {% else %}
+                  {{ val }}
+                {% endif %}
+          - service: light.turn_on
+            target:
+              entity_id: !input light_entity
+            data:
+              brightness_pct: "{{ target | int }}"
+          
+          # Wait briefly, then continue if still holding
+          - delay:
+              milliseconds: 300
+          
+          # Continue ramping if button is still pressed
+          - repeat:
+              while:
+                - condition: template
+                  value_template: >
+                    {% set current = state_attr(light, 'brightness') | int(0) %}
+                    {% set current_pct = (current / 255 * 100) | int %}
+                    {{ current_pct < 100 }}
+              sequence:
+                - service: light.turn_on
+                  target:
+                    entity_id: !input light_entity
+                  data:
+                    brightness_pct: >
+                      {% set current = state_attr(light, 'brightness') | int(0) %}
+                      {% set current_pct = (current / 255 * 100) | int %}
+                      {% set new_val = current_pct + (step | int) %}
+                      {{ [new_val, 100] | min }}
+                - delay:
+                    milliseconds: "{{ rate_ms | int }}"
 
-          - choose:
-              # Short press (saw a release quickly)
-              - conditions: "{{ wait.trigger is not none }}"
-                sequence:
-                  - variables:
-                      current: "{{ state_attr(light, 'brightness') | int(0) }}"
-                      current_pct: "{{ (current / 255 * 100) | int }}"
-                      target: >
-                        {% set val = current_pct + (step | int) %}
-                        {% if states(light) == 'off' %}
-                          {{ step | int }}
-                        {% elif val > 100 %}
-                          100
-                        {% else %}
-                          {{ val }}
-                        {% endif %}
-                  - service: light.turn_on
-                    target:
-                      entity_id: !input light_entity
-                    data:
-                      brightness_pct: "{{ target | int }}"
-
-              # Long press (no release within 300ms) – brighten continuously
-              - conditions: []
-                sequence:
-                  - service: light.turn_on
-                    target:
-                      entity_id: !input light_entity
-                  - repeat:
-                      while:
-                        - condition: template
-                          value_template: >
-                            {% set current = state_attr(light, 'brightness') | int(0) %}
-                            {% set current_pct = (current / 255 * 100) | int %}
-                            {{ current_pct < 100 }}
-                      sequence:
-                        - service: light.turn_on
-                          target:
-                            entity_id: !input light_entity
-                          data:
-                            brightness_pct: >
-                              {% set current = state_attr(light, 'brightness') | int(0) %}
-                              {% set current_pct = (current / 255 * 100) | int %}
-                              {% set new_val = current_pct + (step | int) %}
-                              {{ [new_val, 100] | min }}
-                        - delay:
-                            milliseconds: "{{ rate_ms | int }}"
+      # ---------- RAISE RELEASE: stops the long press ----------
+      - conditions: [{ condition: trigger, id: 'up_release' }]
+        sequence: []
 
       # ---------- MIDDLE: scene (if provided) else toggle light ----------
       - conditions: [{ condition: trigger, id: 'middle' }]
@@ -196,71 +203,66 @@ action:
                 target:
                   entity_id: !input light_entity
 
-      # ---------- LOWER: short = -brightness, long = dim continuously ----------
+      # ---------- LOWER: start dimming sequence ----------
       - conditions: [{ condition: trigger, id: 'down' }]
         sequence:
-          - wait_for_trigger:
-              - platform: device
-                device_id: !input pico_remote
-                domain: lutron_caseta
-                type: release
-                subtype: lower
-            timeout: "00:00:00.3"
-            continue_on_timeout: true
-
+          # First, do a single step decrease
+          - variables:
+              current: "{{ state_attr(light, 'brightness') | int(0) }}"
+              current_pct: "{{ (current / 255 * 100) | int }}"
+              target: >
+                {% set val = current_pct - (step | int) %}
+                {% if val < 5 %} 0 {% else %} {{ val }} {% endif %}
           - choose:
-              # Short press
-              - conditions: "{{ wait.trigger is not none }}"
+              - conditions: "{{ target | int <= 0 }}"
                 sequence:
-                  - variables:
-                      current: "{{ state_attr(light, 'brightness') | int(0) }}"
-                      current_pct: "{{ (current / 255 * 100) | int }}"
-                      target: >
-                        {% set val = current_pct - (step | int) %}
-                        {% if val < 5 %} 0 {% else %} {{ val }} {% endif %}
-                  - choose:
-                      - conditions: "{{ target | int <= 0 }}"
-                        sequence:
-                          - service: light.turn_off
-                            target:
-                              entity_id: !input light_entity
-                    default:
-                      - service: light.turn_on
-                        target:
-                          entity_id: !input light_entity
-                        data:
-                          brightness_pct: "{{ target | int }}"
-
-              # Long press – dim continuously
-              - conditions: []
-                sequence:
-                  - repeat:
-                      while:
-                        - condition: template
-                          value_template: >
-                            {% set current = state_attr(light, 'brightness') | int(0) %}
-                            {% set current_pct = (current / 255 * 100) | int %}
-                            {{ current_pct > 5 }}
-                      sequence:
-                        - service: light.turn_on
-                          target:
-                            entity_id: !input light_entity
-                          data:
-                            brightness_pct: >
-                              {% set current = state_attr(light, 'brightness') | int(0) %}
-                              {% set current_pct = (current / 255 * 100) | int %}
-                              {% set new_val = current_pct - (step | int) %}
-                              {{ [new_val, 5] | max }}
-                        - delay:
-                            milliseconds: "{{ rate_ms | int }}"
-                        - condition: template
-                          value_template: >
-                            {% set current = state_attr(light, 'brightness') | int(0) %}
-                            {% set current_pct = (current / 255 * 100) | int %}
-                            {{ current_pct > 5 }}
                   - service: light.turn_off
                     target:
                       entity_id: !input light_entity
+            default:
+              - service: light.turn_on
+                target:
+                  entity_id: !input light_entity
+                data:
+                  brightness_pct: "{{ target | int }}"
+          
+          # Wait briefly, then continue if still holding
+          - delay:
+              milliseconds: 300
+          
+          # Continue dimming if button is still pressed
+          - repeat:
+              while:
+                - condition: template
+                  value_template: >
+                    {% set current = state_attr(light, 'brightness') | int(0) %}
+                    {% set current_pct = (current / 255 * 100) | int %}
+                    {{ current_pct > 5 and states(light) == 'on' }}
+              sequence:
+                - variables:
+                    current: "{{ state_attr(light, 'brightness') | int(0) }}"
+                    current_pct: "{{ (current / 255 * 100) | int }}"
+                    target: >
+                      {% set val = current_pct - (step | int) %}
+                      {{ [val, 5] | max }}
+                - choose:
+                    - conditions: "{{ target | int <= 5 }}"
+                      sequence:
+                        - service: light.turn_off
+                          target:
+                            entity_id: !input light_entity
+                  default:
+                    - service: light.turn_on
+                      target:
+                        entity_id: !input light_entity
+                      data:
+                        brightness_pct: "{{ target | int }}"
+                - delay:
+                    milliseconds: "{{ rate_ms | int }}"
+
+      # ---------- LOWER RELEASE: stops the dimming ----------
+      - conditions: [{ condition: trigger, id: 'down_release' }]
+        sequence: []
 
       # ---------- BOTTOM: Off ----------
       - conditions: [{ condition: trigger, id: 'off' }]
