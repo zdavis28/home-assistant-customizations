@@ -110,7 +110,7 @@ action:
     - condition: trigger
       id: middle
     sequence:
-    - service: fan.toggle
+    - service: fan.turn_on
       target:
         entity_id: !input fan_entity
 
