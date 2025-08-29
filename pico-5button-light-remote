@@ -1,0 +1,270 @@
+blueprint:
+  name: Pico Light Control – 5 Button (short/long) + Optional Scene
+  description: >
+    Control dimmable lights with a Lutron Pico 5-button remote (PJ2-3BRL).
+    Short press raises/lowers brightness in steps; long press dims continuously.
+    Optional: map the middle (stop/favorite) button to a scene (e.g., Movie Mode).
+    Optimized for dimmable LED lights.
+  domain: automation
+  author: zoo-helper
+
+  input:
+    pico_remote:
+      name: Lutron Pico
+      selector:
+        device:
+          model: PJ2-3BRL-GXX-F01 (Pico3ButtonRaiseLower)
+          multiple: false
+    light_entity:
+      name: Light
+      selector:
+        entity:
+          domain: [light]
+          multiple: false
+    step_percent:
+      name: Brightness step size (%)
+      description: Percentage change for short press brighten/dim
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 50
+          step: 5
+          unit_of_measurement: "%"
+          mode: slider
+    brightness_change_rate:
+      name: Long-press repeat (ms)
+      description: Delay between brightness changes while holding raise/lower
+      default: 300
+      selector:
+        number:
+          min: 100
+          max: 800
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+    middle_scene:
+      name: (Optional) Scene for middle button
+      default:
+      selector:
+        entity:
+          domain: [scene]
+          multiple: false
+
+mode: restart
+
+variables:
+  light: !input light_entity
+  step: !input step_percent
+  rate_ms: !input brightness_change_rate
+  middle_scene: !input middle_scene
+
+trigger:
+  # Top (On)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: 'on'
+    id: "on"
+
+  # Raise (Up/Brighten)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: raise
+    id: "up"
+
+  # Middle (Stop / Favorite)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: stop
+    id: "middle"
+
+  # Lower (Down/Dim)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: lower
+    id: "down"
+
+  # Bottom (Off)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: 'off'
+    id: "off"
+
+action:
+  - choose:
+
+      # ---------- TOP: turn on (resume last brightness or go to step) ----------
+      - conditions: [{ condition: trigger, id: 'on' }]
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: state
+                    entity_id: !input light_entity
+                    state: 'off'
+                sequence:
+                  - service: light.turn_on
+                    target:
+                      entity_id: !input light_entity
+                    data:
+                      brightness_pct: "{{ step | int }}"
+            default:
+              - service: light.turn_on
+                target:
+                  entity_id: !input light_entity
+
+      # ---------- RAISE: short = +brightness, long = brighten continuously ----------
+      - conditions: [{ condition: trigger, id: 'up' }]
+        sequence:
+          - wait_for_trigger:
+              - platform: device
+                device_id: !input pico_remote
+                domain: lutron_caseta
+                type: release
+                subtype: raise
+            timeout: "00:00:00.3"
+            continue_on_timeout: true
+
+          - choose:
+              # Short press (saw a release quickly)
+              - conditions: "{{ wait.trigger is not none }}"
+                sequence:
+                  - variables:
+                      current: "{{ state_attr(light, 'brightness') | int(0) }}"
+                      current_pct: "{{ (current / 255 * 100) | int }}"
+                      target: >
+                        {% set val = current_pct + (step | int) %}
+                        {% if states(light) == 'off' %}
+                          {{ step | int }}
+                        {% elif val > 100 %}
+                          100
+                        {% else %}
+                          {{ val }}
+                        {% endif %}
+                  - service: light.turn_on
+                    target:
+                      entity_id: !input light_entity
+                    data:
+                      brightness_pct: "{{ target | int }}"
+
+              # Long press (no release within 300ms) – brighten continuously
+              - conditions: []
+                sequence:
+                  - service: light.turn_on
+                    target:
+                      entity_id: !input light_entity
+                  - repeat:
+                      while:
+                        - condition: template
+                          value_template: >
+                            {% set current = state_attr(light, 'brightness') | int(0) %}
+                            {% set current_pct = (current / 255 * 100) | int %}
+                            {{ current_pct < 100 }}
+                      sequence:
+                        - service: light.turn_on
+                          target:
+                            entity_id: !input light_entity
+                          data:
+                            brightness_pct: >
+                              {% set current = state_attr(light, 'brightness') | int(0) %}
+                              {% set current_pct = (current / 255 * 100) | int %}
+                              {% set new_val = current_pct + (step | int) %}
+                              {{ [new_val, 100] | min }}
+                        - delay:
+                            milliseconds: "{{ rate_ms | int }}"
+
+      # ---------- MIDDLE: scene (if provided) else toggle light ----------
+      - conditions: [{ condition: trigger, id: 'middle' }]
+        sequence:
+          - choose:
+              - conditions: "{{ middle_scene is not none and middle_scene != '' }}"
+                sequence:
+                  - service: scene.turn_on
+                    target:
+                      entity_id: "{{ middle_scene }}"
+            default:
+              - service: light.toggle
+                target:
+                  entity_id: !input light_entity
+
+      # ---------- LOWER: short = -brightness, long = dim continuously ----------
+      - conditions: [{ condition: trigger, id: 'down' }]
+        sequence:
+          - wait_for_trigger:
+              - platform: device
+                device_id: !input pico_remote
+                domain: lutron_caseta
+                type: release
+                subtype: lower
+            timeout: "00:00:00.3"
+            continue_on_timeout: true
+
+          - choose:
+              # Short press
+              - conditions: "{{ wait.trigger is not none }}"
+                sequence:
+                  - variables:
+                      current: "{{ state_attr(light, 'brightness') | int(0) }}"
+                      current_pct: "{{ (current / 255 * 100) | int }}"
+                      target: >
+                        {% set val = current_pct - (step | int) %}
+                        {% if val < 5 %} 0 {% else %} {{ val }} {% endif %}
+                  - choose:
+                      - conditions: "{{ target | int <= 0 }}"
+                        sequence:
+                          - service: light.turn_off
+                            target:
+                              entity_id: !input light_entity
+                    default:
+                      - service: light.turn_on
+                        target:
+                          entity_id: !input light_entity
+                        data:
+                          brightness_pct: "{{ target | int }}"
+
+              # Long press – dim continuously
+              - conditions: []
+                sequence:
+                  - repeat:
+                      while:
+                        - condition: template
+                          value_template: >
+                            {% set current = state_attr(light, 'brightness') | int(0) %}
+                            {% set current_pct = (current / 255 * 100) | int %}
+                            {{ current_pct > 5 }}
+                      sequence:
+                        - service: light.turn_on
+                          target:
+                            entity_id: !input light_entity
+                          data:
+                            brightness_pct: >
+                              {% set current = state_attr(light, 'brightness') | int(0) %}
+                              {% set current_pct = (current / 255 * 100) | int %}
+                              {% set new_val = current_pct - (step | int) %}
+                              {{ [new_val, 5] | max }}
+                        - delay:
+                            milliseconds: "{{ rate_ms | int }}"
+                        - condition: template
+                          value_template: >
+                            {% set current = state_attr(light, 'brightness') | int(0) %}
+                            {% set current_pct = (current / 255 * 100) | int %}
+                            {{ current_pct > 5 }}
+                  - service: light.turn_off
+                    target:
+                      entity_id: !input light_entity
+
+      # ---------- BOTTOM: Off ----------
+      - conditions: [{ condition: trigger, id: 'off' }]
+        sequence:
+          - service: light.turn_off
+            target:
+              entity_id: !input light_entity
