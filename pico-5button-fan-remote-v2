@@ -3,7 +3,7 @@ blueprint:
   description: >
     Control a ceiling fan with a Lutron Pico 5-button remote (PJ2-3BRL).
     Short press raises/lowers in steps; long press ramps continuously.
-    Optional: map middle (stop/favorite) to a scene (e.g., Sleep Mode).
+    Optional: map the middle (stop/favorite) button to a scene (e.g., Sleep Mode).
   domain: automation
   author: zoo-helper
 
@@ -52,6 +52,7 @@ blueprint:
 
 mode: restart
 
+# Variables can reference !input safely; just don't template !input for entity_id fields.
 variables:
   fan: !input fan_entity
   step: !input step_percent
@@ -59,40 +60,45 @@ variables:
   middle_scene: !input middle_scene
 
 trigger:
+  # Top (On)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: 'on'
-    id: 'on'
+    id: "on"
 
+  # Raise (Up)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: raise
-    id: 'up'
+    id: "up"
 
+  # Middle (Stop / Favorite)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: stop
-    id: 'middle'
+    id: "middle"
 
+  # Lower (Down)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: lower
-    id: 'down'
+    id: "down"
 
+  # Bottom (Off)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: 'off'
-    id: 'off'
+    id: "off"
 
 action:
   - choose:
@@ -103,17 +109,21 @@ action:
           - choose:
               - conditions:
                   - condition: state
-                    entity_id: "{{ fan }}"
+                    entity_id: !input fan_entity
                     state: 'off'
                 sequence:
                   - service: fan.turn_on
-                    target: { entity_id: "{{ fan }}" }
+                    target:
+                      entity_id: !input fan_entity
                   - service: fan.set_percentage
-                    target: { entity_id: "{{ fan }}" }
-                    data: { percentage: "{{ step | int }}" }
+                    target:
+                      entity_id: !input fan_entity
+                    data:
+                      percentage: "{{ step | int }}"
             default:
               - service: fan.turn_on
-                target: { entity_id: "{{ fan }}" }
+                target:
+                  entity_id: !input fan_entity
 
       # ---------- RAISE: short = +step, long = ramp up ----------
       - conditions: [{ condition: trigger, id: 'up' }]
@@ -128,25 +138,35 @@ action:
             continue_on_timeout: true
 
           - choose:
-              # Short press (we saw a release quickly)
+              # Short press (saw a release quickly)
               - conditions: "{{ wait.trigger is not none }}"
                 sequence:
                   - variables:
                       current: "{{ state_attr(fan, 'percentage') | int(0) }}"
                       target: >
-                        {% set val = (current + step | int) %}
-                        {{ 100 if val > 100 else (step if (states(fan) == 'off') else val) }}
+                        {% set val = current + (step | int) %}
+                        {% if states(fan) == 'off' %}
+                          {{ step | int }}
+                        {% elif val > 100 %}
+                          100
+                        {% else %}
+                          {{ val }}
+                        {% endif %}
                   - service: fan.turn_on
-                    target: { entity_id: "{{ fan }}" }
+                    target:
+                      entity_id: !input fan_entity
                   - service: fan.set_percentage
-                    target: { entity_id: "{{ fan }}" }
-                    data: { percentage: "{{ target | int }}" }
+                    target:
+                      entity_id: !input fan_entity
+                    data:
+                      percentage: "{{ target | int }}"
 
               # Long press (no release within 300ms) – ramp up
               - conditions: []
                 sequence:
                   - service: fan.turn_on
-                    target: { entity_id: "{{ fan }}" }
+                    target:
+                      entity_id: !input fan_entity
                   - repeat:
                       while:
                         - condition: template
@@ -155,11 +175,19 @@ action:
                         - variables:
                             current: "{{ state_attr(fan, 'percentage') | int(0) }}"
                             target: >
-                              {% set val = current + step | int %}
-                              {{ 100 if val > 100 else (step if (states(fan) == 'off') else val) }}
+                              {% set val = current + (step | int) %}
+                              {% if states(fan) == 'off' %}
+                                {{ step | int }}
+                              {% elif val > 100 %}
+                                100
+                              {% else %}
+                                {{ val }}
+                              {% endif %}
                         - service: fan.set_percentage
-                          target: { entity_id: "{{ fan }}" }
-                          data: { percentage: "{{ target | int }}" }
+                          target:
+                            entity_id: !input fan_entity
+                          data:
+                            percentage: "{{ target | int }}"
                         - delay:
                             milliseconds: "{{ rate_ms | int }}"
 
@@ -170,10 +198,12 @@ action:
               - conditions: "{{ middle_scene is not none and middle_scene != '' }}"
                 sequence:
                   - service: scene.turn_on
-                    target: { entity_id: "{{ middle_scene }}" }
+                    target:
+                      entity_id: "{{ middle_scene }}"
             default:
               - service: fan.toggle
-                target: { entity_id: "{{ fan }}" }
+                target:
+                  entity_id: !input fan_entity
 
       # ---------- LOWER: short = -step, long = ramp down ----------
       - conditions: [{ condition: trigger, id: 'down' }]
@@ -194,17 +224,20 @@ action:
                   - variables:
                       current: "{{ state_attr(fan, 'percentage') | int(0) }}"
                       target: >
-                        {% set val = (current - step | int) %}
-                        {{ 0 if val < 0 else val }}
+                        {% set val = current - (step | int) %}
+                        {% if val < 0 %} 0 {% else %} {{ val }} {% endif %}
                   - choose:
                       - conditions: "{{ target | int <= 0 }}"
                         sequence:
                           - service: fan.turn_off
-                            target: { entity_id: "{{ fan }}" }
+                            target:
+                              entity_id: !input fan_entity
                     default:
                       - service: fan.set_percentage
-                        target: { entity_id: "{{ fan }}" }
-                        data: { percentage: "{{ target | int }}" }
+                        target:
+                          entity_id: !input fan_entity
+                        data:
+                          percentage: "{{ target | int }}"
 
               # Long press – ramp down
               - conditions: []
@@ -217,17 +250,20 @@ action:
                         - variables:
                             current: "{{ state_attr(fan, 'percentage') | int(0) }}"
                             target: >
-                              {% set val = (current - step | int) %}
-                              {{ 0 if val < 0 else val }}
+                              {% set val = current - (step | int) %}
+                              {% if val < 0 %} 0 {% else %} {{ val }} {% endif %}
                         - choose:
                             - conditions: "{{ target | int <= 0 }}"
                               sequence:
                                 - service: fan.turn_off
-                                  target: { entity_id: "{{ fan }}" }
+                                  target:
+                                    entity_id: !input fan_entity
                           default:
                             - service: fan.set_percentage
-                              target: { entity_id: "{{ fan }}" }
-                              data: { percentage: "{{ target | int }}" }
+                              target:
+                                entity_id: !input fan_entity
+                              data:
+                                percentage: "{{ target | int }}"
                         - delay:
                             milliseconds: "{{ rate_ms | int }}"
 
@@ -235,4 +271,5 @@ action:
       - conditions: [{ condition: trigger, id: 'off' }]
         sequence:
           - service: fan.turn_off
-            target: { entity_id: "{{ fan }}" }
+            target:
+              entity_id: !input fan_entity
