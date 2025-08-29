@@ -59,51 +59,46 @@ variables:
   middle_scene: !input middle_scene
 
 trigger:
-  # Top (On)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: 'on'
-    id: on
+    id: 'on'
 
-  # Raise (Up)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: raise
-    id: up
+    id: 'up'
 
-  # Middle (Stop / Favorite)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: stop
-    id: middle
+    id: 'middle'
 
-  # Lower (Down)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: lower
-    id: down
+    id: 'down'
 
-  # Bottom (Off)
   - platform: device
     device_id: !input pico_remote
     domain: lutron_caseta
     type: press
     subtype: 'off'
-    id: off
+    id: 'off'
 
 action:
   - choose:
 
       # ---------- TOP: turn on (resume last or go to step) ----------
-      - conditions: [{ condition: trigger, id: on }]
+      - conditions: [{ condition: trigger, id: 'on' }]
         sequence:
           - choose:
               - conditions:
@@ -121,7 +116,7 @@ action:
                 target: { entity_id: "{{ fan }}" }
 
       # ---------- RAISE: short = +step, long = ramp up ----------
-      - conditions: [{ condition: trigger, id: up }]
+      - conditions: [{ condition: trigger, id: 'up' }]
         sequence:
           - wait_for_trigger:
               - platform: device
@@ -169,7 +164,7 @@ action:
                             milliseconds: "{{ rate_ms | int }}"
 
       # ---------- MIDDLE: scene (if provided) else toggle fan ----------
-      - conditions: [{ condition: trigger, id: middle }]
+      - conditions: [{ condition: trigger, id: 'middle' }]
         sequence:
           - choose:
               - conditions: "{{ middle_scene is not none and middle_scene != '' }}"
@@ -181,7 +176,7 @@ action:
                 target: { entity_id: "{{ fan }}" }
 
       # ---------- LOWER: short = -step, long = ramp down ----------
-      - conditions: [{ condition: trigger, id: down }]
+      - conditions: [{ condition: trigger, id: 'down' }]
         sequence:
           - wait_for_trigger:
               - platform: device
@@ -237,7 +232,7 @@ action:
                             milliseconds: "{{ rate_ms | int }}"
 
       # ---------- BOTTOM: Off ----------
-      - conditions: [{ condition: trigger, id: off }]
+      - conditions: [{ condition: trigger, id: 'off' }]
         sequence:
           - service: fan.turn_off
             target: { entity_id: "{{ fan }}" }
