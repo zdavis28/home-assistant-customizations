@@ -1,0 +1,243 @@
+blueprint:
+  name: Pico Fan Control – 5 Button (short/long) + Optional Scene
+  description: >
+    Control a ceiling fan with a Lutron Pico 5-button remote (PJ2-3BRL).
+    Short press raises/lowers in steps; long press ramps continuously.
+    Optional: map middle (stop/favorite) to a scene (e.g., Sleep Mode).
+  domain: automation
+  author: zoo-helper
+
+  input:
+    pico_remote:
+      name: Lutron Pico
+      selector:
+        device:
+          model: PJ2-3BRL-GXX-F01 (Pico3ButtonRaiseLower)
+          multiple: false
+    fan_entity:
+      name: Fan
+      selector:
+        entity:
+          domain: [fan]
+          multiple: false
+    step_percent:
+      name: Step size (%)
+      description: Percentage change for short press raises/lowers
+      default: 25
+      selector:
+        number:
+          min: 5
+          max: 50
+          step: 5
+          unit_of_measurement: "%"
+          mode: slider
+    speed_change_rate:
+      name: Long-press repeat (ms)
+      description: Delay between ramps while holding raise/lower
+      default: 400
+      selector:
+        number:
+          min: 150
+          max: 1000
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+    middle_scene:
+      name: (Optional) Scene for middle button
+      default:
+      selector:
+        entity:
+          domain: [scene]
+          multiple: false
+
+mode: restart
+
+variables:
+  fan: !input fan_entity
+  step: !input step_percent
+  rate_ms: !input speed_change_rate
+  middle_scene: !input middle_scene
+
+trigger:
+  # Top (On)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: 'on'
+    id: on
+
+  # Raise (Up)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: raise
+    id: up
+
+  # Middle (Stop / Favorite)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: stop
+    id: middle
+
+  # Lower (Down)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: lower
+    id: down
+
+  # Bottom (Off)
+  - platform: device
+    device_id: !input pico_remote
+    domain: lutron_caseta
+    type: press
+    subtype: 'off'
+    id: off
+
+action:
+  - choose:
+
+      # ---------- TOP: turn on (resume last or go to step) ----------
+      - conditions: [{ condition: trigger, id: on }]
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: state
+                    entity_id: "{{ fan }}"
+                    state: 'off'
+                sequence:
+                  - service: fan.turn_on
+                    target: { entity_id: "{{ fan }}" }
+                  - service: fan.set_percentage
+                    target: { entity_id: "{{ fan }}" }
+                    data: { percentage: "{{ step | int }}" }
+            default:
+              - service: fan.turn_on
+                target: { entity_id: "{{ fan }}" }
+
+      # ---------- RAISE: short = +step, long = ramp up ----------
+      - conditions: [{ condition: trigger, id: up }]
+        sequence:
+          - wait_for_trigger:
+              - platform: device
+                device_id: !input pico_remote
+                domain: lutron_caseta
+                type: release
+                subtype: raise
+            timeout: "00:00:00.3"
+            continue_on_timeout: true
+
+          - choose:
+              # Short press (we saw a release quickly)
+              - conditions: "{{ wait.trigger is not none }}"
+                sequence:
+                  - variables:
+                      current: "{{ state_attr(fan, 'percentage') | int(0) }}"
+                      target: >
+                        {% set val = (current + step | int) %}
+                        {{ 100 if val > 100 else (step if (states(fan) == 'off') else val) }}
+                  - service: fan.turn_on
+                    target: { entity_id: "{{ fan }}" }
+                  - service: fan.set_percentage
+                    target: { entity_id: "{{ fan }}" }
+                    data: { percentage: "{{ target | int }}" }
+
+              # Long press (no release within 300ms) – ramp up
+              - conditions: []
+                sequence:
+                  - service: fan.turn_on
+                    target: { entity_id: "{{ fan }}" }
+                  - repeat:
+                      while:
+                        - condition: template
+                          value_template: "{{ (state_attr(fan, 'percentage') | int(0)) < 100 }}"
+                      sequence:
+                        - variables:
+                            current: "{{ state_attr(fan, 'percentage') | int(0) }}"
+                            target: >
+                              {% set val = current + step | int %}
+                              {{ 100 if val > 100 else (step if (states(fan) == 'off') else val) }}
+                        - service: fan.set_percentage
+                          target: { entity_id: "{{ fan }}" }
+                          data: { percentage: "{{ target | int }}" }
+                        - delay:
+                            milliseconds: "{{ rate_ms | int }}"
+
+      # ---------- MIDDLE: scene (if provided) else toggle fan ----------
+      - conditions: [{ condition: trigger, id: middle }]
+        sequence:
+          - choose:
+              - conditions: "{{ middle_scene is not none and middle_scene != '' }}"
+                sequence:
+                  - service: scene.turn_on
+                    target: { entity_id: "{{ middle_scene }}" }
+            default:
+              - service: fan.toggle
+                target: { entity_id: "{{ fan }}" }
+
+      # ---------- LOWER: short = -step, long = ramp down ----------
+      - conditions: [{ condition: trigger, id: down }]
+        sequence:
+          - wait_for_trigger:
+              - platform: device
+                device_id: !input pico_remote
+                domain: lutron_caseta
+                type: release
+                subtype: lower
+            timeout: "00:00:00.3"
+            continue_on_timeout: true
+
+          - choose:
+              # Short press
+              - conditions: "{{ wait.trigger is not none }}"
+                sequence:
+                  - variables:
+                      current: "{{ state_attr(fan, 'percentage') | int(0) }}"
+                      target: >
+                        {% set val = (current - step | int) %}
+                        {{ 0 if val < 0 else val }}
+                  - choose:
+                      - conditions: "{{ target | int <= 0 }}"
+                        sequence:
+                          - service: fan.turn_off
+                            target: { entity_id: "{{ fan }}" }
+                    default:
+                      - service: fan.set_percentage
+                        target: { entity_id: "{{ fan }}" }
+                        data: { percentage: "{{ target | int }}" }
+
+              # Long press – ramp down
+              - conditions: []
+                sequence:
+                  - repeat:
+                      while:
+                        - condition: template
+                          value_template: "{{ (state_attr(fan, 'percentage') | int(0)) > 0 }}"
+                      sequence:
+                        - variables:
+                            current: "{{ state_attr(fan, 'percentage') | int(0) }}"
+                            target: >
+                              {% set val = (current - step | int) %}
+                              {{ 0 if val < 0 else val }}
+                        - choose:
+                            - conditions: "{{ target | int <= 0 }}"
+                              sequence:
+                                - service: fan.turn_off
+                                  target: { entity_id: "{{ fan }}" }
+                          default:
+                            - service: fan.set_percentage
+                              target: { entity_id: "{{ fan }}" }
+                              data: { percentage: "{{ target | int }}" }
+                        - delay:
+                            milliseconds: "{{ rate_ms | int }}"
+
+      # ---------- BOTTOM: Off ----------
+      - conditions: [{ condition: trigger, id: off }]
+        sequence:
+          - service: fan.turn_off
+            target: { entity_id: "{{ fan }}" }
