@@ -4,6 +4,7 @@ blueprint:
     Control a ceiling fan with a Lutron Pico 5-button remote (PJ2-3BRL).
     Short press raises/lowers in steps; long press ramps continuously.
     Optional: map the middle (stop/favorite) button to a scene (e.g., Sleep Mode).
+    Optimized for variable speed fans.
   domain: automation
   author: zoo-helper
 
@@ -23,7 +24,7 @@ blueprint:
     step_percent:
       name: Step size (%)
       description: Percentage change for short press raises/lowers
-      default: 25
+      default: 10
       selector:
         number:
           min: 5
@@ -52,7 +53,6 @@ blueprint:
 
 mode: restart
 
-# Variables can reference !input safely; just don't template !input for entity_id fields.
 variables:
   fan: !input fan_entity
   step: !input step_percent
@@ -172,22 +172,14 @@ action:
                         - condition: template
                           value_template: "{{ (state_attr(fan, 'percentage') | int(0)) < 100 }}"
                       sequence:
-                        - variables:
-                            current: "{{ state_attr(fan, 'percentage') | int(0) }}"
-                            target: >
-                              {% set val = current + (step | int) %}
-                              {% if states(fan) == 'off' %}
-                                {{ step | int }}
-                              {% elif val > 100 %}
-                                100
-                              {% else %}
-                                {{ val }}
-                              {% endif %}
                         - service: fan.set_percentage
                           target:
                             entity_id: !input fan_entity
                           data:
-                            percentage: "{{ target | int }}"
+                            percentage: >
+                              {% set current = state_attr(fan, 'percentage') | int(0) %}
+                              {% set new_val = current + (step | int) %}
+                              {{ [new_val, 100] | min }}
                         - delay:
                             milliseconds: "{{ rate_ms | int }}"
 
@@ -247,25 +239,21 @@ action:
                         - condition: template
                           value_template: "{{ (state_attr(fan, 'percentage') | int(0)) > 0 }}"
                       sequence:
-                        - variables:
-                            current: "{{ state_attr(fan, 'percentage') | int(0) }}"
-                            target: >
-                              {% set val = current - (step | int) %}
-                              {% if val < 0 %} 0 {% else %} {{ val }} {% endif %}
-                        - choose:
-                            - conditions: "{{ target | int <= 0 }}"
-                              sequence:
-                                - service: fan.turn_off
-                                  target:
-                                    entity_id: !input fan_entity
-                          default:
-                            - service: fan.set_percentage
-                              target:
-                                entity_id: !input fan_entity
-                              data:
-                                percentage: "{{ target | int }}"
+                        - service: fan.set_percentage
+                          target:
+                            entity_id: !input fan_entity
+                          data:
+                            percentage: >
+                              {% set current = state_attr(fan, 'percentage') | int(0) %}
+                              {% set new_val = current - (step | int) %}
+                              {{ [new_val, 0] | max }}
                         - delay:
                             milliseconds: "{{ rate_ms | int }}"
+                        - condition: template
+                          value_template: "{{ (state_attr(fan, 'percentage') | int(0)) > 0 }}"
+                  - service: fan.turn_off
+                    target:
+                      entity_id: !input fan_entity
 
       # ---------- BOTTOM: Off ----------
       - conditions: [{ condition: trigger, id: 'off' }]
